@@ -15,11 +15,13 @@ mod switch;
 mod task;
 
 use crate::config::MAX_APP_NUM;
+use crate::config::MAX_SYSCALL_NUM;
+use crate::timer::get_time_ms;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus, TaskInfo};
 
 pub use context::TaskContext;
 
@@ -54,6 +56,12 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info: TaskInfo{
+                status: TaskStatus::UnInit,
+                syscall_times: [0;MAX_SYSCALL_NUM],
+                time: 0,
+            },
+            timestamp: get_time_ms(),
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -92,7 +100,7 @@ impl TaskManager {
 
     /// Change the status of current `Running` task into `Ready`.
     fn mark_current_suspended(&self) {
-        let mut inner = self.inner.exclusive_access();
+        let mut inner: core::cell::RefMut<'_, TaskManagerInner> = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Ready;
     }
@@ -102,6 +110,21 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Exited;
+    }
+
+    /// return the status of current task info.
+    fn get_current_status(&self) -> TaskInfo {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.status = inner.tasks[current].task_status;
+        inner.tasks[current].task_info.time =  get_time_ms() - inner.tasks[current].timestamp;
+        inner.tasks[current].task_info
+    }
+    /// system_id counter++
+    fn syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.syscall_times[syscall_id] +=1;
     }
 
     /// Find next task to run and return task id.
@@ -158,6 +181,11 @@ fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
 }
 
+/// Change the status of current `Running` task into `Exited`.
+fn get_current_taskstatus() -> TaskInfo{
+    TASK_MANAGER.get_current_status()
+}
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     mark_current_suspended();
@@ -168,4 +196,12 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+/// achieve the status of task
+pub fn sys_get_task_status() -> TaskInfo{
+    get_current_taskstatus()
+}
+/// set syscall time
+pub fn current_task_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.syscall_count(syscall_id);
 }

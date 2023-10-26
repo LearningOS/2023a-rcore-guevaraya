@@ -1,11 +1,24 @@
 //! Types related to task management
 use super::TaskContext;
+
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
-
+use crate::timer::get_time_ms;
+pub use crate::config::MAX_SYSCALL_NUM;
+/// Task information
+#[allow(dead_code)]
+#[derive(Copy, Clone)]
+pub struct TaskInfo {
+    /// Task status in it's life cycle
+    pub status: TaskStatus,
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+    /// Total running time of task
+    pub time: usize,
+}
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
     /// Save task context
@@ -13,6 +26,11 @@ pub struct TaskControlBlock {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+
+    /// The task information
+    pub task_info: TaskInfo,
+    /// The first start timestamp
+    pub timestamp: usize,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -55,6 +73,12 @@ impl TaskControlBlock {
             kernel_stack_top.into(),
             MapPermission::R | MapPermission::W,
         );
+        let task_info = TaskInfo{
+            status: TaskStatus::UnInit,
+            syscall_times: [0;MAX_SYSCALL_NUM],
+            time: 0,
+        };
+        let timestamp = get_time_ms();
         let task_control_block = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -63,6 +87,8 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            task_info: task_info,
+            timestamp: timestamp,
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -96,6 +122,7 @@ impl TaskControlBlock {
             None
         }
     }
+
 }
 
 #[derive(Copy, Clone, PartialEq)]

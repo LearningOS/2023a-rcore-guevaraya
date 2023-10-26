@@ -15,12 +15,14 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+
+use crate::timer::get_time_ms;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus, TaskInfo};
 
 pub use context::TaskContext;
 
@@ -53,10 +55,12 @@ lazy_static! {
     pub static ref TASK_MANAGER: TaskManager = {
         println!("init TASK_MANAGER");
         let num_app = get_num_app();
+
         println!("num_app = {}", num_app);
         let mut tasks: Vec<TaskControlBlock> = Vec::new();
         for i in 0..num_app {
             tasks.push(TaskControlBlock::new(get_app_data(i), i));
+
         }
         TaskManager {
             num_app,
@@ -101,6 +105,21 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].task_status = TaskStatus::Exited;
+    }
+
+    /// return the status of current task info.
+    fn get_current_status(&self) -> TaskInfo {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.status = inner.tasks[current].task_status;
+        inner.tasks[current].task_info.time =  get_time_ms() - inner.tasks[current].timestamp;
+        inner.tasks[current].task_info
+    }
+    /// system_id counter++
+    fn syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.syscall_times[syscall_id] +=1;
     }
 
     /// Find next task to run and return task id.
@@ -176,6 +195,11 @@ fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
 }
 
+/// Change the status of current `Running` task into `Exited`.
+fn get_current_taskstatus() -> TaskInfo{
+    TASK_MANAGER.get_current_status()
+}
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     mark_current_suspended();
@@ -187,6 +211,7 @@ pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
 }
+
 
 /// Get the current 'Running' task's token.
 pub fn current_user_token() -> usize {
@@ -202,3 +227,13 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
+
+/// achieve the status of task
+pub fn sys_get_task_status() -> TaskInfo{
+    get_current_taskstatus()
+}
+/// set syscall time
+pub fn current_task_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.syscall_count(syscall_id);
+}
+

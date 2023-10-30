@@ -1,9 +1,11 @@
 //! Types related to task management
+//use riscv::paging::PTE;
+
 use super::TaskContext;
 
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
+    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,VPNRange,
 };
 use crate::trap::{trap_handler, TrapContext};
 use crate::timer::get_time_ms;
@@ -79,6 +81,7 @@ impl TaskControlBlock {
             time: 0,
         };
         let timestamp = get_time_ms();
+        //debug!("task_info:{:?}",timestamp);
         let task_control_block = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -100,6 +103,96 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
         task_control_block
+    }
+    /// actual impl syscall_mmap, we create map_perm and insert_framed_area for it
+    pub fn syscall_mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        let start_v:VirtAddr= start.into();
+        let end_v:VirtAddr = (start+len).into();
+        if start_v.floor() >= end_v.ceil(){
+            debug!("syscall_mmap start_v:{:?} > end_v:{:?}", start_v, end_v);
+            return -1;
+        }
+        let mut ret:isize = 0;
+        if !start_v.aligned()
+        {
+            error!("syscall_mmap start not algin:{:?}", start_v);
+            ret = -1;
+        }
+        if port & !0x7 != 0 {
+            ret = -1;
+        }
+        if port & 0x7 == 0{
+            ret = -1;
+        }
+        let virt_range = VPNRange::new(start_v.floor(), end_v.ceil());
+        for vpn in virt_range{
+            debug!("syscall_mmap vpn:{:?}", vpn);
+            match  self.memory_set.translate(vpn){
+                Some(pte) => {
+                    debug!("syscall_mmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
+                    if pte.is_valid(){ ret = -1;};
+                },
+                None => {debug!("vpn translate none")},
+            };
+        }
+        if ret == 0{
+            let mut map_perm = MapPermission::U;
+            if port&0x1 > 0 {
+                map_perm |= MapPermission::R;
+            }
+            if port&0x2 > 0 {
+                map_perm |= MapPermission::W;            
+            }
+            if port&0x4 > 0 {
+                map_perm |= MapPermission::W;            
+            }
+            self.memory_set.insert_framed_area(start_v, end_v, map_perm);
+            
+        }
+        debug!("syscall_mmap ret:{:?}", ret);   
+        ret
+    }
+
+    /// actual impl syscall_munmap, we create map_perm and insert_framed_area for it
+    pub fn syscall_munmap(&mut self, start: usize, len: usize) -> isize {
+        let start_v:VirtAddr= start.into();
+        let end_v:VirtAddr = (start+len).into();
+        if start_v.floor() >= end_v.ceil(){
+            debug!("start_v:{:?} > end_v:{:?}", start_v, end_v);
+            return -1;
+        }
+        if !start_v.aligned()
+        {
+            error!("syscall_munmap start not algin:{:?}", start_v);
+            return -1;
+        }
+        let virt_range = VPNRange::new(start_v.floor(), end_v.ceil());
+    
+        for vpn in virt_range{
+            debug!("syscall_mmap vpn:{:?}", vpn);
+            match  self.memory_set.translate(vpn){
+                Some(pte) => {
+                    debug!("syscall_munmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
+                    if !pte.is_valid() {return -1;}
+                },
+                None => {debug!("syscall_munmap translate none");return -1;},
+            };
+        };
+        debug!("syscall_munmap shrink_to:{:#x}", start_v.0);        
+        if self.memory_set.shrink_to(start_v, start_v){
+            for vpn in virt_range{
+                debug!("syscall_munmap vpn:{:?}", vpn);
+                match  self.memory_set.translate(vpn){
+                    Some(pte) => {
+                        debug!("syscall_munmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
+                    },
+                    None => {debug!("syscall_munmap translate none");},
+                }
+            };
+            0
+        }else{
+            -1
+        }
     }
     /// change the location of the program break. return None if failed.
     pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {

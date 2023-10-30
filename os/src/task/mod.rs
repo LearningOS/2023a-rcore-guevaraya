@@ -16,7 +16,6 @@ mod task;
 
 use crate::loader::{get_app_data, get_num_app};
 
-use crate::timer::get_time_ms;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -112,7 +111,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_info.status = inner.tasks[current].task_status;
-        inner.tasks[current].task_info.time =  get_time_ms() - inner.tasks[current].timestamp;
+        inner.tasks[current].task_info.time =  inner.tasks[current].timestamp;
+        debug!("taskInfo.time:{:?}", inner.tasks[current].task_info.time);
         inner.tasks[current].task_info
     }
     /// system_id counter++
@@ -152,6 +152,19 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// mmap the addr and len
+    pub fn syscall_mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_mmap(start, len, port)
+    }
+    /// unmmap the addr and len
+    pub fn syscall_munmap(&self, start: usize, len: usize) -> isize {
+        debug!("syscall_munmap:start:{:#x}  len:{:#x}", start, len);
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_munmap(start, len)
+    }
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -235,5 +248,13 @@ pub fn sys_get_task_status() -> TaskInfo{
 /// set syscall time
 pub fn current_task_syscall_count(syscall_id: usize) {
     TASK_MANAGER.syscall_count(syscall_id);
+}
+/// set syscall mmap
+pub fn task_syscall_mmap(start: usize, len: usize, port: usize) -> isize{
+    TASK_MANAGER.syscall_mmap(start, len, port)
+}
+/// set syscall munmap
+pub fn task_syscall_munmap(start: usize, len: usize) -> isize{
+    TASK_MANAGER.syscall_munmap(start, len)
 }
 

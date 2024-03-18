@@ -2,19 +2,19 @@
 //!
 use alloc::sync::Arc;
 
+use crate::mm::translated_byte_buffer;
+use crate::timer::{get_time_ms, get_time_us};
 use crate::{
     fs::{open_file, OpenFlags},
     mm::{translated_refmut, translated_str},
+    task::TaskInfo,
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next,
     },
-    task::TaskInfo,
 };
-use crate::timer::{get_time_ms,get_time_us};
-use crate::mm::translated_byte_buffer;
-use core::slice::from_raw_parts;
 use core::mem;
+use core::slice::from_raw_parts;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -22,7 +22,6 @@ pub struct TimeVal {
     pub sec: usize,
     pub usec: usize,
 }
-
 
 pub fn sys_exit(exit_code: i32) -> ! {
     trace!("kernel:pid[{}] sys_exit", current_task().unwrap().pid.0);
@@ -113,14 +112,26 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    let buffers = translated_byte_buffer(current_user_token(), _ts as *mut u8, mem::size_of::<TimeVal>());
-    let k_ts = TimeVal{sec:get_time_ms()/1000, usec:get_time_us()};
-    let mut position:usize = 0;
-    let slice_ts = unsafe { from_raw_parts(&k_ts as *const TimeVal as *const u8, mem::size_of::<TimeVal>())};
+    let buffers = translated_byte_buffer(
+        current_user_token(),
+        _ts as *mut u8,
+        mem::size_of::<TimeVal>(),
+    );
+    let k_ts = TimeVal {
+        sec: get_time_ms() / 1000,
+        usec: get_time_us(),
+    };
+    let mut position: usize = 0;
+    let slice_ts = unsafe {
+        from_raw_parts(
+            &k_ts as *const TimeVal as *const u8,
+            mem::size_of::<TimeVal>(),
+        )
+    };
     //debug!("get_time_ms:{:?}",get_time_ms());
-    for ker_addr_set in buffers{
+    for ker_addr_set in buffers {
         let pslice_ts = &slice_ts[position..ker_addr_set.len()];
-        position += ker_addr_set.len() ;
+        position += ker_addr_set.len();
         ker_addr_set.copy_from_slice(pslice_ts);
         trace!("ker_addr_set.len:{}", ker_addr_set.len());
     }
@@ -139,15 +150,24 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info");
 
-    let buffers = translated_byte_buffer(current_user_token(), _ti as *mut u8, mem::size_of::<TaskInfo>());
-    let mut position:usize = 0;
+    let buffers = translated_byte_buffer(
+        current_user_token(),
+        _ti as *mut u8,
+        mem::size_of::<TaskInfo>(),
+    );
+    let mut position: usize = 0;
     let mut info: TaskInfo = current_task().unwrap().sys_get_task_status();
-    let slice_info = unsafe { from_raw_parts(&info as *const TaskInfo as *const u8, mem::size_of::<TaskInfo>())};
-    info.time = get_time_us()/1000 - info.time;
-    debug!("sys_task_info:{:?}",get_time_us()/1000);   
-    for ker_addr_set in buffers{
+    let slice_info = unsafe {
+        from_raw_parts(
+            &info as *const TaskInfo as *const u8,
+            mem::size_of::<TaskInfo>(),
+        )
+    };
+    info.time = get_time_us() / 1000 - info.time;
+    debug!("sys_task_info:{:?}", get_time_us() / 1000);
+    for ker_addr_set in buffers {
         let pslice_ts = &slice_info[position..ker_addr_set.len()];
-        position += ker_addr_set.len() ;
+        position += ker_addr_set.len();
         ker_addr_set.copy_from_slice(pslice_ts);
         trace!("ker_addr_set.len:{}", ker_addr_set.len());
     }
@@ -156,7 +176,10 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    debug!("kernel: sys_mmap {:#x} len:{:#x} port:{:#x}",_start, _len, _port);
+    debug!(
+        "kernel: sys_mmap {:#x} len:{:#x} port:{:#x}",
+        _start, _len, _port
+    );
     let ret = current_task().unwrap().syscall_mmap(_start, _len, _port);
     debug!("sys_mmap ret:{:?}", ret);
     ret
@@ -164,8 +187,8 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    debug!("kernel: sys_munmap start:{:#x} len:{:#x}",_start, _len);
-    let ret =current_task().unwrap().syscall_munmap(_start, _len);
+    debug!("kernel: sys_munmap start:{:#x} len:{:#x}", _start, _len);
+    let ret = current_task().unwrap().syscall_munmap(_start, _len);
     debug!("sys_munmap ret:{:?}", ret);
     ret
 }
@@ -184,7 +207,7 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn IMPLEMENTED",
         current_task().unwrap().pid.0
     );
     let token = current_user_token();

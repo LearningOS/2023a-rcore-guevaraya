@@ -37,8 +37,8 @@ impl Bitmap {
                 if let Some((bits64_pos, inner_pos)) = bitmap_block
                     .iter()
                     .enumerate()
-                    .find(|(_, bits64)| **bits64 != u64::MAX)
-                    .map(|(bits64_pos, bits64)| (bits64_pos, bits64.trailing_ones() as usize))
+                    .find(|(_, bits64)| **bits64 != u64::MAX) // _ 批判
+                    .map(|(bits64_pos_x, bits64)| (bits64_pos_x, bits64.trailing_ones() as usize))
                 {
                     // modify cache
                     bitmap_block[bits64_pos] |= 1u64 << inner_pos;

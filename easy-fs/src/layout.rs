@@ -2,11 +2,11 @@ use super::{get_block_cache, BlockDevice, BLOCK_SZ};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
-
+use log::info;
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
-const INODE_DIRECT_COUNT: usize = 28;
+const INODE_DIRECT_COUNT: usize = 27;
 /// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
@@ -86,6 +86,7 @@ pub struct DiskInode {
     pub indirect1: u32,
     pub indirect2: u32,
     type_: DiskInodeType,
+    pub nlinks: u32,
 }
 
 impl DiskInode {
@@ -97,6 +98,20 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlinks = 1;
+        info!("initialize:{}", self.nlinks);
+    }
+    pub fn linkup(&mut self) {
+        self.nlinks += 1;
+        info!("nlinks{}", self.nlinks);
+    }
+    pub fn linkdown(&mut self) -> u32 {
+        //assert!(self.nlinks > 1);
+        self.nlinks -= 1;
+        self.nlinks
+    }
+    pub fn linknum(&self) -> u32 {
+        self.nlinks
     }
     /// Whether this inode is a directory
     pub fn is_dir(&self) -> bool {
@@ -136,6 +151,11 @@ impl DiskInode {
         assert!(new_size >= self.size);
         Self::total_blocks(new_size) - Self::total_blocks(self.size)
     }
+    /// Get the number of data blocks that have to be deallocated given the new size of data
+    pub fn blocks_num_deleted(&self, new_size: u32) -> u32 {
+        assert!(new_size <= self.size);
+        Self::total_blocks(self.size) - Self::total_blocks(new_size)
+    }
     /// Get id of block given inner id
     pub fn get_block_id(&self, inner_id: u32, block_device: &Arc<dyn BlockDevice>) -> u32 {
         let inner_id = inner_id as usize;
@@ -161,6 +181,95 @@ impl DiskInode {
                 })
         }
     }
+    // decrease the size of current disk inode
+    pub fn decrease_size(
+        &mut self,
+        new_size: u32,
+        block_device: &Arc<dyn BlockDevice>,
+    ) -> Vec<u32> {
+        let mut v: Vec<u32> = Vec::new();
+        let mut current_blocks: usize = self.data_blocks() as usize; //获取旧的块数
+        self.size = new_size;
+        let total_blocks = self.data_blocks() as usize; //获取当前最新块数
+        assert!(total_blocks <= current_blocks);
+        // dealloc indirect2
+        info!("inode decrease_size: {}=>{} current_blocks:{}->total_blocks{}", 
+                            self.size, new_size, 
+                            current_blocks, total_blocks);
+        if current_blocks > (INODE_INDIRECT1_COUNT + INODE_DIRECT_COUNT) {
+            get_block_cache(self.indirect2 as usize, Arc::clone(block_device))
+                .lock()
+                .modify(0, |indirect2: &mut IndirectBlock| {
+                    while current_blocks
+                        > total_blocks.max(INODE_INDIRECT1_COUNT + INODE_DIRECT_COUNT)
+                    {
+                        info!("current_blocks:{}", current_blocks);
+                        let current_indirect2_nums =
+                            (current_blocks - INODE_INDIRECT1_COUNT + INODE_DIRECT_COUNT) as usize;
+                        let indirect2_index = current_indirect2_nums / INODE_INDIRECT1_COUNT;
+                        let mut indirect1_index = current_indirect2_nums % INODE_INDIRECT1_COUNT;
+
+                        get_block_cache(
+                            indirect2[indirect2_index] as usize,
+                            Arc::clone(block_device),
+                        )
+                        .lock()
+                        .modify(0, |indirect1: &mut IndirectBlock| {
+                            while current_blocks > total_blocks.max(INODE_INDIRECT1_COUNT)
+                                && indirect1_index > 0
+                            {
+                                v.push(indirect1[indirect1_index]);
+                                indirect1[indirect1_index] = 0;
+                                current_blocks -= 1;
+                                indirect1_index -= 1;
+                            }
+                        });
+                    }
+                });
+        }
+        if current_blocks > (INODE_INDIRECT1_COUNT + INODE_DIRECT_COUNT) as usize {
+            return v;
+        } else {
+            if self.indirect2 > 0 {
+                v.push(self.indirect2);
+                self.indirect2 = 0;
+            }
+        }
+        info!("need remove indirect1 {}", current_blocks);
+        // dealloc indirect1
+        get_block_cache(
+            self.indirect1 as usize,
+            Arc::clone(block_device),
+        )
+        .lock()
+        .modify(0, |indirect1: &mut IndirectBlock| {
+            
+            while current_blocks > total_blocks.max(INODE_DIRECT_COUNT)
+            {
+                let indirect1_index = current_blocks - INODE_DIRECT_COUNT;
+                v.push(indirect1[indirect1_index]);
+                indirect1[indirect1_index] = 0;
+                current_blocks -= 1;
+            }
+        });
+        info!("need remove direct block {}", current_blocks);
+        if current_blocks > (INODE_DIRECT_COUNT) as usize {
+            return v;
+        } else {
+            if self.indirect1 > 0 {
+                v.push(self.indirect1);
+                self.indirect1 = 0;
+            }
+        }
+        // dealloc direct array
+        while current_blocks > total_blocks {
+            v.push(self.direct[current_blocks]); // 记录直接映射块到集合
+            self.direct[current_blocks] = 0;
+            current_blocks -= 1;
+        }
+        info!("return vec  {:?}", v);
+        v
+    }
     /// Inncrease the size of current disk inode
     pub fn increase_size(
         &mut self,
@@ -168,9 +277,9 @@ impl DiskInode {
         new_blocks: Vec<u32>,
         block_device: &Arc<dyn BlockDevice>,
     ) {
-        let mut current_blocks = self.data_blocks();
+        let mut current_blocks = self.data_blocks(); //获取当前块数
         self.size = new_size;
-        let mut total_blocks = self.data_blocks();
+        let mut total_blocks = self.data_blocks(); //获取当前最新块数
         let mut new_blocks = new_blocks.into_iter();
         // fill direct
         while current_blocks < total_blocks.min(INODE_DIRECT_COUNT as u32) {
@@ -205,7 +314,7 @@ impl DiskInode {
             total_blocks -= INODE_INDIRECT1_COUNT as u32;
         } else {
             return;
-        }
+        } 
         // fill indirect2 from (a0, b0) -> (a1, b1)
         let mut a0 = current_blocks as usize / INODE_INDIRECT1_COUNT;
         let mut b0 = current_blocks as usize % INODE_INDIRECT1_COUNT;
@@ -239,12 +348,13 @@ impl DiskInode {
     /// We will clear the block contents to zero later.
     pub fn clear_size(&mut self, block_device: &Arc<dyn BlockDevice>) -> Vec<u32> {
         let mut v: Vec<u32> = Vec::new();
-        let mut data_blocks = self.data_blocks() as usize;
+        let mut data_blocks = self.data_blocks() as usize; //获取数据块的块数
         self.size = 0;
         let mut current_blocks = 0usize;
         // direct
         while current_blocks < data_blocks.min(INODE_DIRECT_COUNT) {
-            v.push(self.direct[current_blocks]);
+            // 判定当前块小于直接映射的块数
+            v.push(self.direct[current_blocks]); // 记录直接映射块到集合
             self.direct[current_blocks] = 0;
             current_blocks += 1;
         }

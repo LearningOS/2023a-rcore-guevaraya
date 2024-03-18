@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -123,7 +123,36 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
         })
     }
 }
-
+/// file linke with filename
+pub fn file_link(src_name: &str, new_name: &str) -> isize {
+    info!("sys_link:{} -> {} ", new_name, src_name);
+    if let Some(inode) = ROOT_INODE.find(src_name) {
+        if ROOT_INODE.link(inode, new_name).is_some() {
+            return 0
+        } else {
+            log::error!("link newname{} failed", new_name);
+            return -1
+        }
+    } else {
+        //log::error!("not found oldname{}", src_name);
+        -1
+    }
+}
+/// file unlinke with linkname
+pub fn file_unlink(name: &str) -> Option<isize> {
+    if let Some(src_inode) = ROOT_INODE.find(name) {
+        if let Some(ret) = ROOT_INODE.unlink(src_inode, name) {
+            info!("unlink ok({})", name);
+            Some(ret)
+        } else {
+            //error!("not found oldname({})", name);
+            None
+        }
+    } else {
+        //error!("not found oldname({})", name);
+        None
+    }
+}
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -154,5 +183,25 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn stat(&self) -> Option<Stat> {
+        let inner = self.inner.exclusive_access();
+
+        let mode = {
+            if inner.inode.is_dir() {
+                StatMode::DIR
+            } else if inner.inode.is_file() {
+                StatMode::FILE
+            } else {
+                StatMode::NULL
+            }
+        };
+        Some(Stat {
+            dev: 0,
+            ino: inner.inode.get_inode_id().unwrap(),
+            mode: mode,
+            nlink: inner.inode.link_nums(),
+            pad: [0; 7],
+        })
     }
 }

@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::cell::RefMut;
 //use core::cmp::Ordering;
 pub use crate::config::MAX_STRIDE_NUM;
-/* 
+/*
 struct Stride(u64);
 
 impl PartialOrd for Stride {
@@ -33,15 +33,12 @@ impl PartialEq for Stride {
 }
 */
 
+pub use crate::config::MAX_SYSCALL_NUM;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
-
-use crate::mm::{
-    MapPermission,VPNRange,
-};
+use crate::mm::{MapPermission, VPNRange};
 use crate::timer::get_time_ms;
-pub use crate::config::MAX_SYSCALL_NUM;
 /// Task information
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
@@ -163,9 +160,9 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
-        let task_info = TaskInfo{
+        let task_info = TaskInfo {
             status: TaskStatus::UnInit,
-            syscall_times: [0;MAX_SYSCALL_NUM],
+            syscall_times: [0; MAX_SYSCALL_NUM],
             time: 0,
         };
         let timestamp = get_time_ms();
@@ -196,8 +193,8 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     task_info: task_info,
                     timestamp: timestamp,
-                    stride:0,
-                    priority:16,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -260,41 +257,41 @@ impl TaskControlBlock {
             }
         }
 
-       // alloc a pid and a kernel stack in kernel space
-       let pid_handle = pid_alloc();
-       let kernel_stack = kstack_alloc();
-       let kernel_stack_top = kernel_stack.get_top();
-       let task_control_block = Arc::new(TaskControlBlock {
-           pid: pid_handle,
-           kernel_stack,
-           inner: unsafe {
-               UPSafeCell::new(TaskControlBlockInner {
-                   trap_cx_ppn,
-                   base_size: user_sp,
-                   task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                   task_status: TaskStatus::Ready,
-                   memory_set,
-                   parent: Some(Arc::downgrade(self)),
-                   children: Vec::new(),
-                   exit_code: 0,
-                   heap_bottom: parent_inner.heap_bottom,
-                   program_brk: parent_inner.program_brk,
-                   task_info: parent_inner.task_info,
-                   timestamp: parent_inner.timestamp,
-                   priority: parent_inner.priority,
-                   stride:parent_inner.stride,
-                   fd_table:new_fd_table,
-               })
-           },
-       });
-       // add child
-       parent_inner.children.push(task_control_block.clone());
-       // modify kernel_sp in trap_cx
-       // **** access child PCB exclusively
-       let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
-  
-       // **** release child PCB
-       // ---- release parent PCB
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    task_info: parent_inner.task_info,
+                    timestamp: parent_inner.timestamp,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
+                    fd_table: new_fd_table,
+                })
+            },
+        });
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // modify kernel_sp in trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+
+        // **** release child PCB
+        // ---- release parent PCB
         // initialize trap_cx
         *trap_cx = TrapContext::app_init_context(
             entry_point,
@@ -347,8 +344,8 @@ impl TaskControlBlock {
                     program_brk: parent_inner.program_brk,
                     task_info: parent_inner.task_info,
                     timestamp: parent_inner.timestamp,
-                    stride:parent_inner.stride,
-                    priority:parent_inner.priority,
+                    stride: parent_inner.stride,
+                    priority: parent_inner.priority,
                 })
             },
         });
@@ -370,120 +367,150 @@ impl TaskControlBlock {
     }
 
     /// actual impl syscall_mmap, we create map_perm and insert_framed_area for it
-    pub fn syscall_mmap(& self, start: usize, len: usize, port: usize) -> isize {
+    pub fn syscall_mmap(&self, start: usize, len: usize, port: usize) -> isize {
         let mut inner = self.inner_exclusive_access();
-        let start_v:VirtAddr= start.into();
-        let end_v:VirtAddr = (start+len).into();
-        if start_v.floor() >= end_v.ceil(){
+        let start_v: VirtAddr = start.into();
+        let end_v: VirtAddr = (start + len).into();
+        if start_v.floor() >= end_v.ceil() {
             debug!("syscall_mmap start_v:{:?} > end_v:{:?}", start_v, end_v);
             return -1;
         }
-        let mut ret:isize = 0;
-        if !start_v.aligned()
-        {
+        let mut ret: isize = 0;
+        if !start_v.aligned() {
             error!("syscall_mmap start not algin:{:?}", start_v);
             ret = -1;
         }
         if port & !0x7 != 0 {
             ret = -1;
         }
-        if port & 0x7 == 0{
+        if port & 0x7 == 0 {
             ret = -1;
         }
         let virt_range = VPNRange::new(start_v.floor(), end_v.ceil());
-        for vpn in virt_range{
+        for vpn in virt_range {
             debug!("syscall_mmap vpn:{:?}", vpn);
-            match  inner.memory_set.translate(vpn){
+            match inner.memory_set.translate(vpn) {
                 Some(pte) => {
-                    debug!("syscall_mmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
-                    if pte.is_valid(){ ret = -1;};
-                },
-                None => {debug!("vpn translate none")},
+                    debug!(
+                        "syscall_mmap pte{:#x} vaild:{:?}",
+                        pte.flags(),
+                        pte.is_valid()
+                    );
+                    if pte.is_valid() {
+                        ret = -1;
+                    };
+                }
+                None => {
+                    debug!("vpn translate none")
+                }
             };
         }
-        if ret == 0{
+        if ret == 0 {
             let mut map_perm = MapPermission::U;
-            if port&0x1 > 0 {
+            if port & 0x1 > 0 {
                 map_perm |= MapPermission::R;
             }
-            if port&0x2 > 0 {
-                map_perm |= MapPermission::W;            
+            if port & 0x2 > 0 {
+                map_perm |= MapPermission::W;
             }
-            if port&0x4 > 0 {
-                map_perm |= MapPermission::W;            
+            if port & 0x4 > 0 {
+                map_perm |= MapPermission::W;
             }
-            inner.memory_set.insert_framed_area(start_v, end_v, map_perm);
-            
+            inner
+                .memory_set
+                .insert_framed_area(start_v, end_v, map_perm);
         }
-        debug!("syscall_mmap ret:{:?}", ret);   
+        debug!("syscall_mmap ret:{:?}", ret);
         ret
     }
 
     /// actual impl syscall_munmap, we create map_perm and insert_framed_area for it
-    pub fn syscall_munmap(& self, start: usize, len: usize) -> isize {
+    pub fn syscall_munmap(&self, start: usize, len: usize) -> isize {
         let mut inner = self.inner_exclusive_access();
-        let start_v:VirtAddr= start.into();
-        let end_v:VirtAddr = (start+len).into();
-        if start_v.floor() >= end_v.ceil(){
+        let start_v: VirtAddr = start.into();
+        let end_v: VirtAddr = (start + len).into();
+        if start_v.floor() >= end_v.ceil() {
             debug!("start_v:{:?} > end_v:{:?}", start_v, end_v);
             return -1;
         }
-        if !start_v.aligned()
-        {
+        if !start_v.aligned() {
             error!("syscall_munmap start not algin:{:?}", start_v);
             return -1;
         }
         let virt_range = VPNRange::new(start_v.floor(), end_v.ceil());
-    
-        for vpn in virt_range{
+
+        for vpn in virt_range {
             debug!("syscall_mmap vpn:{:?}", vpn);
-            match  inner.memory_set.translate(vpn){
+            match inner.memory_set.translate(vpn) {
                 Some(pte) => {
-                    debug!("syscall_munmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
-                    if !pte.is_valid() {return -1;}
-                },
-                None => {debug!("syscall_munmap translate none");return -1;},
-            };
-        };
-        debug!("syscall_munmap shrink_to:{:#x}", start_v.0);        
-        if inner.memory_set.shrink_to(start_v, start_v){
-            for vpn in virt_range{
-                debug!("syscall_munmap vpn:{:?}", vpn);
-                match  inner.memory_set.translate(vpn){
-                    Some(pte) => {
-                        debug!("syscall_munmap pte{:#x} vaild:{:?}",pte.flags(), pte.is_valid());
-                    },
-                    None => {debug!("syscall_munmap translate none");},
+                    debug!(
+                        "syscall_munmap pte{:#x} vaild:{:?}",
+                        pte.flags(),
+                        pte.is_valid()
+                    );
+                    if !pte.is_valid() {
+                        return -1;
+                    }
+                }
+                None => {
+                    debug!("syscall_munmap translate none");
+                    return -1;
                 }
             };
+        }
+        debug!("syscall_munmap shrink_to:{:#x}", start_v.0);
+        if inner.memory_set.shrink_to(start_v, start_v) {
+            for vpn in virt_range {
+                debug!("syscall_munmap vpn:{:?}", vpn);
+                match inner.memory_set.translate(vpn) {
+                    Some(pte) => {
+                        debug!(
+                            "syscall_munmap pte{:#x} vaild:{:?}",
+                            pte.flags(),
+                            pte.is_valid()
+                        );
+                    }
+                    None => {
+                        debug!("syscall_munmap translate none");
+                    }
+                }
+            }
             0
-        }else{
+        } else {
             -1
         }
     }
     /// get information of task
-    pub fn sys_get_task_status(& self) -> TaskInfo {   
+    pub fn sys_get_task_status(&self) -> TaskInfo {
         let mut inner = self.inner_exclusive_access();
         inner.task_info.time = inner.timestamp;
         inner.task_info
     }
     /// set syscall counter of task
-    pub fn syscall_count(& self, call_id:usize) {   
+    pub fn syscall_count(&self, call_id: usize) {
         let mut inner: RefMut<'_, TaskControlBlockInner> = self.inner_exclusive_access();
-        debug!("syscall_times[{}]= {}",call_id, inner.task_info.syscall_times[call_id]);
+        debug!(
+            "syscall_times[{}]= {}",
+            call_id, inner.task_info.syscall_times[call_id]
+        );
         inner.task_info.syscall_times[call_id] += 1;
     }
     /// set syscall counter of task
-    pub fn syscall_set_priority(& self, priority:usize) {   
+    pub fn syscall_set_priority(&self, priority: usize) {
         let mut inner: RefMut<'_, TaskControlBlockInner> = self.inner_exclusive_access();
-        debug!(" set pid:{} priority from {} into:{}", self.getpid(), inner.priority, priority);
+        debug!(
+            " set pid:{} priority from {} into:{}",
+            self.getpid(),
+            inner.priority,
+            priority
+        );
         inner.priority = priority;
     }
-     /// set syscall counter of task
-     pub fn syscall_set_next_stride(& self) {   
+    /// set syscall counter of task
+    pub fn syscall_set_next_stride(&self) {
         let mut inner: RefMut<'_, TaskControlBlockInner> = self.inner_exclusive_access();
-        inner.stride += MAX_STRIDE_NUM /inner.priority;
-    }   
+        inner.stride += MAX_STRIDE_NUM / inner.priority;
+    }
     /// change the location of the program break. return None if failed.
     pub fn change_program_brk(&self, size: i32) -> Option<usize> {
         let mut inner = self.inner_exclusive_access();
@@ -509,7 +536,6 @@ impl TaskControlBlock {
             None
         }
     }
-
 }
 
 #[derive(Copy, Clone, PartialEq)]
